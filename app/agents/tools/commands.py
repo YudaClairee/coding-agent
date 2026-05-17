@@ -49,12 +49,15 @@ class CommandTools(Toolkit):
 
         if requires_conf:
             logger.warning(f"Command requires confirmation: {command_str}")
-            return f"Error: Command '{command_str}' requires manual user confirmation. This agent is not authorized to run it automatically."
+            return (
+                "Error: Command '"
+                + command_str
+                + "' requires manual user confirmation. This agent is not authorized to run it automatically."
+            )
 
         try:
             result = subprocess.run(
                 full_command,
-                shell=False,  # Security: Disable shell
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
@@ -68,8 +71,10 @@ class CommandTools(Toolkit):
             return self._handle_error(e, command_str)
 
     def exec_command(self, command: str) -> str:
-        """Execute a raw shell command. Use run_command instead if possible.
-        Only use this if you need shell features like pipes (|) or redirection (>).
+        """Execute a raw shell command supporting pipes and redirection.
+
+        This function avoids ``shell=True`` by parsing the command string and
+        chaining multiple ``subprocess.Popen`` calls for pipelines.
 
         Args:
             command(str): The shell command to execute.
@@ -77,9 +82,10 @@ class CommandTools(Toolkit):
         Returns:
             str: The stdout and stderr output of the command.
         """
+
         logger.info(f"Executing exec_command: {command} (cwd: {self.project_path})")
 
-        # Policy validation
+        # Policy validation still happens on the raw command string
         is_allowed, error_msg, requires_conf = self.policy.validate(command)
         if not is_allowed:
             logger.warning(f"Command blocked by policy: {command}. Reason: {error_msg}")
@@ -87,18 +93,92 @@ class CommandTools(Toolkit):
 
         if requires_conf:
             logger.warning(f"Command requires confirmation: {command}")
-            return f"Error: Command '{command}' requires manual user confirmation. This agent is not authorized to run it automatically."
+            return (
+                "Error: Command '"
+                + command
+                + "' requires manual user confirmation. This agent is not authorized to run it automatically."
+            )
 
         try:
-            result = subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout,
-                cwd=self.project_path,
-            )
-            return self._format_result(result)
+            # Split into pipeline segments
+            segments = [s.strip() for s in command.split("|") if s.strip()]
+            if not segments:
+                return "Error: Empty command"
+
+            processes: list[subprocess.Popen] = []
+            prev_stdout = None
+
+            for i, segment in enumerate(segments):
+                stdin = prev_stdout
+                stdout = subprocess.PIPE
+                stderr = subprocess.PIPE
+                stdin_file = None
+                stdout_file = None
+
+                # Support a single level of redirection per segment
+                parts = shlex.split(segment, posix=True)
+                cmd_parts: list[str] = []
+                it = iter(parts)
+                for token in it:
+                    if token == "<":
+                        try:
+                            filename = next(it)
+                        except StopIteration:
+                            return "Error: Missing filename after '<'"
+                        stdin_file = open(filename, "r")
+                    elif token in {">", ">>"}:
+                        try:
+                            filename = next(it)
+                        except StopIteration:
+                            return "Error: Missing filename after '>'"
+                        mode = "a" if token == ">>" else "w"
+                        stdout_file = open(filename, mode)
+                    else:
+                        cmd_parts.append(token)
+
+                if not cmd_parts:
+                    return "Error: Empty pipeline segment"
+
+                if stdin_file is not None:
+                    stdin = stdin_file
+
+                if stdout_file is not None:
+                    stdout = stdout_file
+                elif i < len(segments) - 1:
+                    stdout = subprocess.PIPE
+
+                proc = subprocess.Popen(
+                    cmd_parts,
+                    stdin=stdin,
+                    stdout=stdout,
+                    stderr=stderr,
+                    text=True,
+                    cwd=self.project_path,
+                )
+
+                if prev_stdout is not None and prev_stdout is not subprocess.PIPE:
+                    try:
+                        prev_stdout.close()  # type: ignore[call-arg]
+                    except Exception:
+                        pass
+
+                processes.append(proc)
+                prev_stdout = proc.stdout
+
+            # Collect output from the last process
+            stdout_data, stderr_data = processes[-1].communicate(timeout=self.timeout)
+
+            for proc in processes[:-1]:
+                proc.wait(timeout=self.timeout)
+
+            class _Result:
+                def __init__(self, stdout: str, stderr: str, returncode: int):
+                    self.stdout = stdout
+                    self.stderr = stderr
+                    self.returncode = returncode
+
+            result = _Result(stdout_data or "", stderr_data or "", processes[-1].returncode)
+            return self._format_result(result)  # type: ignore[arg-type]
 
         except subprocess.TimeoutExpired as e:
             return self._handle_timeout(e, command)
