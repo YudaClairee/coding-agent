@@ -79,19 +79,45 @@ class CommandTools(Toolkit):
         """
         logger.info(f"Executing exec_command: {command} (cwd: {self.project_path})")
 
-        # Policy validation
-        is_allowed, error_msg, requires_conf = self.policy.validate(command)
+        # Basic shell injection guard: reject dangerous shell metacharacters
+        dangerous_chars = [";", "|", "&", "$", "`", "\n"]
+        if any(ch in command for ch in dangerous_chars):
+            logger.warning(
+                "exec_command rejected due to dangerous shell metacharacters: %s",
+                command,
+            )
+            return (
+                "Error: Command contains forbidden shell metacharacters (;, |, &, $, `, newline) "
+                "and was rejected to prevent shell injection."
+            )
+
+        # Parse and validate tokens before executing with shell=True
+        try:
+            tokens = shlex.split(command)
+        except ValueError as e:
+            logger.warning("Failed to parse command for exec_command: %s", e)
+            return f"Error: Failed to parse command: {e}"
+
+        command_str = " ".join(shlex.quote(t) for t in tokens)
+
+        # Policy validation based on normalized command string
+        is_allowed, error_msg, requires_conf = self.policy.validate(command_str)
         if not is_allowed:
-            logger.warning(f"Command blocked by policy: {command}. Reason: {error_msg}")
+            logger.warning(
+                "Command blocked by policy: %s. Reason: %s", command_str, error_msg
+            )
             return f"Error: {error_msg}"
 
         if requires_conf:
-            logger.warning(f"Command requires confirmation: {command}")
-            return f"Error: Command '{command}' requires manual user confirmation. This agent is not authorized to run it automatically."
+            logger.warning("Command requires confirmation: %s", command_str)
+            return (
+                f"Error: Command '{command_str}' requires manual user confirmation. "
+                "This agent is not authorized to run it automatically."
+            )
 
         try:
             result = subprocess.run(
-                command,
+                command_str,
                 shell=True,
                 capture_output=True,
                 text=True,
