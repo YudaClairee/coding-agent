@@ -21,8 +21,12 @@ class FileSystemTools(Toolkit):
         ``self.base_dir``. This prevents bypasses where a symlink inside the
         base directory points outside of it.
         """
+        base_real = os.path.realpath(self.base_dir)
         resolved = os.path.realpath(os.path.join(self.base_dir, path))
-        if not resolved.startswith(self.base_dir + os.sep) and resolved != self.base_dir:
+
+        # Ensure the resolved path is within the (canonical) base directory
+        common = os.path.commonpath([base_real, resolved])
+        if common != base_real:
             raise ValueError(f"Path {path} is outside the base directory")
         return resolved
 
