@@ -1,0 +1,28 @@
+[project]
+name = "coding-agent"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "agno>=2.5.14",
+    "alembic>=1.13",
+    "ddgs>=9.13.0",
+    "openai>=2.31.0",
+    "sqlalchemy>=2.0",
+    "sqlmodel>=0.0.22",
+    "textual>=8.2.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "ruff>=0.15.9",
+    "ty>=0.0.29",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
