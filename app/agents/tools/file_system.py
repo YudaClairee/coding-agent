@@ -14,8 +14,15 @@ class FileSystemTools(Toolkit):
         )
 
     def _resolve(self, path: str) -> str:
-        resolved = os.path.normpath(os.path.join(self.base_dir, path))
-        if not resolved.startswith(self.base_dir):
+        """Resolve a user-provided path safely within the base directory.
+
+        Uses ``os.path.realpath`` so that any symlinks in the path are
+        resolved before we validate that the final target is still under
+        ``self.base_dir``. This prevents bypasses where a symlink inside the
+        base directory points outside of it.
+        """
+        resolved = os.path.realpath(os.path.join(self.base_dir, path))
+        if not resolved.startswith(self.base_dir + os.sep) and resolved != self.base_dir:
             raise ValueError(f"Path {path} is outside the base directory")
         return resolved
 
