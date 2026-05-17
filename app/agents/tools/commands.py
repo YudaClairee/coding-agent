@@ -83,24 +83,22 @@ class CommandTools(Toolkit):
         dangerous_chars = [";", "|", "&", "$", "`", "\n"]
         if any(ch in command for ch in dangerous_chars):
             logger.warning(
-                "exec_command rejected due to dangerous shell metacharacters: %s",
-                command,
+                "exec_command rejected due to dangerous shell metacharacters: %s", command
             )
             return (
-                "Error: Command contains forbidden shell metacharacters (;, |, &, $, `, newline) "
-                "and was rejected to prevent shell injection."
+                "Error: Command contains forbidden shell metacharacters and was rejected for "
+                "safety. Use run_command() with explicit arguments instead."
             )
 
-        # Parse and validate tokens before executing with shell=True
+        # Parse the command safely into tokens first
         try:
             tokens = shlex.split(command)
         except ValueError as e:
-            logger.warning("Failed to parse command for exec_command: %s", e)
-            return f"Error: Failed to parse command: {e}"
+            logger.warning("Failed to parse command %s: %s", command, e)
+            return "Error: Failed to parse command. Please check your quoting and syntax."
 
-        command_str = " ".join(shlex.quote(t) for t in tokens)
-
-        # Policy validation based on normalized command string
+        # Policy validation on the normalized/quoted form
+        command_str = " ".join(shlex.quote(token) for token in tokens)
         is_allowed, error_msg, requires_conf = self.policy.validate(command_str)
         if not is_allowed:
             logger.warning(
@@ -117,8 +115,8 @@ class CommandTools(Toolkit):
 
         try:
             result = subprocess.run(
-                command_str,
-                shell=True,
+                tokens,
+                shell=False,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
