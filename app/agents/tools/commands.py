@@ -58,7 +58,8 @@ class CommandTools(Toolkit):
         try:
             result = subprocess.run(
                 full_command,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 timeout=self.timeout,
                 cwd=self.project_path,
@@ -74,7 +75,10 @@ class CommandTools(Toolkit):
         """Execute a raw shell command supporting pipes and redirection.
 
         This function avoids ``shell=True`` by parsing the command string and
-        chaining multiple ``subprocess.Popen`` calls for pipelines.
+        chaining multiple ``subprocess.Popen`` calls for pipeline handling.
+
+        WARNING: Prefer :meth:`run_command` when possible, as it is easier to
+        validate and reason about.
 
         Args:
             command(str): The shell command to execute.
@@ -99,21 +103,23 @@ class CommandTools(Toolkit):
                 + "' requires manual user confirmation. This agent is not authorized to run it automatically."
             )
 
+        processes: list[subprocess.Popen] = []
+        stdin_file = None
+        stdout_file = None
+
         try:
             # Split into pipeline segments
             segments = [s.strip() for s in command.split("|") if s.strip()]
             if not segments:
                 return "Error: Empty command"
 
-            processes: list[subprocess.Popen] = []
             prev_stdout = None
 
             for i, segment in enumerate(segments):
                 stdin = prev_stdout
                 stdout = subprocess.PIPE
-                stderr = subprocess.PIPE
-                stdin_file = None
-                stdout_file = None
+                # Only the last process uses a dedicated stderr pipe; earlier ones merge stderr into stdout
+                stderr = subprocess.PIPE if i == len(segments) - 1 else subprocess.STDOUT
 
                 # Support a single level of redirection per segment
                 parts = shlex.split(segment, posix=True)
@@ -139,10 +145,14 @@ class CommandTools(Toolkit):
                 if not cmd_parts:
                     return "Error: Empty pipeline segment"
 
-                if stdin_file is not None:
+                # Determine stdin for this process
+                if stdin_file is not None and i == 0:
                     stdin = stdin_file
+                elif prev_stdout is not None:
+                    stdin = prev_stdout
 
-                if stdout_file is not None:
+                # Determine stdout for this process
+                if stdout_file is not None and i == len(segments) - 1:
                     stdout = stdout_file
                 elif i < len(segments) - 1:
                     stdout = subprocess.PIPE
@@ -156,7 +166,8 @@ class CommandTools(Toolkit):
                     cwd=self.project_path,
                 )
 
-                if prev_stdout is not None and prev_stdout is not subprocess.PIPE:
+                # Close the previous stdout in the parent so we don't leak file descriptors
+                if prev_stdout is not None and prev_stdout is not stdin:
                     try:
                         prev_stdout.close()  # type: ignore[call-arg]
                     except Exception:
@@ -168,9 +179,11 @@ class CommandTools(Toolkit):
             # Collect output from the last process
             stdout_data, stderr_data = processes[-1].communicate(timeout=self.timeout)
 
+            # Ensure all earlier processes complete
             for proc in processes[:-1]:
                 proc.wait(timeout=self.timeout)
 
+            # Create a simple result-like object to pass into _format_result
             class _Result:
                 def __init__(self, stdout: str, stderr: str, returncode: int):
                     self.stdout = stdout
@@ -184,6 +197,23 @@ class CommandTools(Toolkit):
             return self._handle_timeout(e, command)
         except Exception as e:
             return self._handle_error(e, command)
+        finally:
+            # Ensure any opened files are closed
+            for f in (stdin_file, stdout_file):
+                if f is not None:
+                    try:
+                        f.close()
+                    except Exception:
+                        pass
+
+            # Close any remaining stdout/stderr pipes
+            for proc in processes:
+                for stream in (proc.stdout, proc.stderr):
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except Exception:
+                            pass
 
     def _format_result(self, result: subprocess.CompletedProcess) -> str:
         stdout = result.stdout or ""
