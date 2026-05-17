@@ -14,8 +14,11 @@ class FileSystemTools(Toolkit):
         )
 
     def _resolve(self, path: str) -> str:
-        resolved = os.path.realpath(os.path.join(self.base_dir, path))
-        if not resolved.startswith(self.base_dir):
+        base = os.path.realpath(os.path.normcase(self.base_dir))
+        resolved = os.path.realpath(
+            os.path.normcase(os.path.join(self.base_dir, path))
+        )
+        if os.path.commonpath([base, resolved]) != base:
             raise ValueError(f"Path {path} is outside the base directory")
         return resolved
 
